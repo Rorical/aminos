@@ -65,6 +65,13 @@ var (
 	ogCacheConsiderHost      = flag.Bool("og-cache-consider-host", false, "enable or disable the use of the host in the Open Graph tag cache")
 	extractResources         = flag.String("extract-resources", "", "if set, extract the static resources to the specified folder")
 	webmasterEmail           = flag.String("webmaster-email", "", "if set, displays webmaster's email on the reject page for appeals")
+
+	// Mining configuration options
+	miningEnabled          = flag.Bool("mining-enabled", false, "enable Bitcoin mining functionality")
+	miningPoolAddress      = flag.String("mining-pool-address", "", "address of the mining pool to connect to (e.g., stratum+tcp://pool.example.com:3333)")
+	miningPoolUsername     = flag.String("mining-pool-username", "", "username for mining pool authentication")
+	miningPoolPassword     = flag.String("mining-pool-password", "", "password for mining pool authentication")
+	miningClientDifficulty = flag.Float64("mining-client-difficulty", 1.0, "difficulty level for web clients (lower than pool difficulty)")
 )
 
 func keyFromHex(value string) (ed25519.PrivateKey, error) {
@@ -296,6 +303,13 @@ func main() {
 		Target:               *target,
 		WebmasterEmail:       *webmasterEmail,
 		OGCacheConsidersHost: *ogCacheConsiderHost,
+		Mining: libanubis.MiningOptions{
+			Enabled:          *miningEnabled,
+			PoolAddress:      *miningPoolAddress,
+			PoolUsername:     *miningPoolUsername,
+			PoolPassword:     *miningPoolPassword,
+			ClientDifficulty: *miningClientDifficulty,
+		},
 	})
 	if err != nil {
 		log.Fatalf("can't construct libanubis.Server: %v", err)
@@ -334,6 +348,7 @@ func main() {
 		"base-prefix", *basePrefix,
 		"cookie-expiration-time", *cookieExpiration,
 		"rule-error-ids", ruleErrorIDs,
+		"mining-enabled", *miningEnabled,
 	)
 
 	go func() {

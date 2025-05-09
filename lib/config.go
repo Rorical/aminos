@@ -22,6 +22,15 @@ import (
 	"github.com/TecharoHQ/anubis/xess"
 )
 
+// MiningOptions defines configuration options for Bitcoin mining
+type MiningOptions struct {
+	Enabled          bool    `yaml:"enabled"`
+	PoolAddress      string  `yaml:"pool_address"`
+	PoolUsername     string  `yaml:"pool_username"`
+	PoolPassword     string  `yaml:"pool_password"`
+	ClientDifficulty float64 `yaml:"client_difficulty"`
+}
+
 type Options struct {
 	Next                 http.Handler
 	Policy               *policy.ParsedConfig
@@ -38,6 +47,7 @@ type Options struct {
 	OGPassthrough        bool
 	CookiePartitioned    bool
 	ServeRobotsTXT       bool
+	Mining               MiningOptions
 }
 
 func LoadPoliciesOrDefault(fname string, defaultDifficulty int) (*policy.ParsedConfig, error) {
@@ -116,6 +126,7 @@ func New(opts Options) (*Server, error) {
 	stripPrefix := strings.TrimSuffix(anubis.BasePrefix, "/") + anubis.StaticPath
 	registerWithPrefix(anubis.StaticPath, internal.UnchangingCache(internal.NoBrowsing(http.StripPrefix(stripPrefix, http.FileServerFS(web.Static)))), "")
 
+	// Add robots.txt route if enabled
 	if opts.ServeRobotsTXT {
 		registerWithPrefix("/robots.txt", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFileFS(w, r, web.Static, "static/robots.txt")
@@ -125,13 +136,22 @@ func New(opts Options) (*Server, error) {
 		}), "GET")
 	}
 
+	// Standard Anubis API routes
 	registerWithPrefix(anubis.APIPrefix+"make-challenge", http.HandlerFunc(result.MakeChallenge), "POST")
+	registerWithPrefix(anubis.APIPrefix+"make-challenge", http.HandlerFunc(result.MakeChallenge), "GET")
 	registerWithPrefix(anubis.APIPrefix+"pass-challenge", http.HandlerFunc(result.PassChallenge), "GET")
 	registerWithPrefix(anubis.APIPrefix+"check", http.HandlerFunc(result.maybeReverseProxyHttpStatusOnly), "")
 	registerWithPrefix(anubis.APIPrefix+"test-error", http.HandlerFunc(result.TestError), "GET")
 	registerWithPrefix("/", http.HandlerFunc(result.maybeReverseProxyOrPage), "")
 
 	result.mux = mux
+
+	// Initialize mining functionality
+	if opts.Mining.Enabled {
+		if err := result.initMining(); err != nil {
+			return nil, err
+		}
+	}
 
 	return result, nil
 }

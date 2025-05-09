@@ -32,9 +32,20 @@ THE SOFTWARE.
 for the JavaScript code in this page.
 */'
 
+# Main script
 esbuild js/main.mjs --sourcemap --bundle --minify --outfile=static/js/main.mjs "--banner:js=${LICENSE}"
 gzip -f -k -n static/js/main.mjs
 zstd -f -k --ultra -22 static/js/main.mjs
 brotli -fZk static/js/main.mjs
 
+# Bench script
 esbuild js/bench.mjs --sourcemap --bundle --minify --outfile=static/js/bench.mjs
+gzip -f -k -n static/js/bench.mjs
+zstd -f -k --ultra -22 static/js/bench.mjs
+brotli -fZk static/js/bench.mjs
+
+# Bitcoin mining script
+esbuild js/bitcoin-mining.mjs --sourcemap --bundle --minify --format=esm --outfile=static/js/bitcoin-mining.mjs "--banner:js=${LICENSE}"
+gzip -f -k -n static/js/bitcoin-mining.mjs
+zstd -f -k --ultra -22 static/js/bitcoin-mining.mjs
+brotli -fZk static/js/bitcoin-mining.mjs

@@ -25,6 +25,7 @@ import (
 	"github.com/TecharoHQ/anubis/internal"
 	"github.com/TecharoHQ/anubis/internal/dnsbl"
 	"github.com/TecharoHQ/anubis/internal/ogtags"
+	"github.com/TecharoHQ/anubis/lib/mining"
 	"github.com/TecharoHQ/anubis/lib/policy"
 	"github.com/TecharoHQ/anubis/lib/policy/config"
 )
@@ -55,6 +56,27 @@ var (
 		Help:    "The time taken for a browser to generate a response (milliseconds)",
 		Buckets: prometheus.ExponentialBucketsRange(1, math.Pow(2, 18), 19),
 	})
+
+	// Mining metrics
+	miningSharesSubmitted = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "anubis_mining_shares_submitted",
+		Help: "The total number of mining shares submitted by clients",
+	})
+
+	miningSharesAccepted = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "anubis_mining_shares_accepted",
+		Help: "The total number of mining shares accepted (client difficulty)",
+	})
+
+	miningSharesRejected = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "anubis_mining_shares_rejected",
+		Help: "The total number of mining shares rejected",
+	})
+
+	miningPoolShares = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "anubis_mining_pool_shares",
+		Help: "The total number of shares accepted by the pool",
+	})
 )
 
 type Server struct {
@@ -66,6 +88,63 @@ type Server struct {
 	priv       ed25519.PrivateKey
 	pub        ed25519.PublicKey
 	opts       Options
+
+	// Mining-related fields
+	stratumClient    *mining.StratumClient
+	miningEnabled    bool
+	clientDifficulty float64
+}
+
+// Initialize the mining components
+func (s *Server) initMining() error {
+	// Skip if mining is not enabled
+	if !s.opts.Mining.Enabled {
+		slog.Info("Mining functionality is disabled")
+		return nil
+	}
+
+	slog.Info("Initializing Bitcoin mining functionality",
+		"pool_address", s.opts.Mining.PoolAddress,
+		"pool_username", s.opts.Mining.PoolUsername,
+		"client_difficulty", s.opts.Mining.ClientDifficulty)
+
+	if s.opts.Mining.PoolAddress == "" {
+		slog.Error("Mining pool address is empty")
+		return fmt.Errorf("mining pool address cannot be empty")
+	}
+
+	// Create and initialize the Stratum client
+	client, err := mining.NewStratumClient(
+		s.opts.Mining.PoolAddress,
+		s.opts.Mining.PoolUsername,
+		s.opts.Mining.PoolPassword,
+	)
+
+	if err != nil {
+		slog.Error("Failed to initialize mining client", "error", err)
+		return fmt.Errorf("failed to initialize mining: %w", err)
+	}
+
+	s.stratumClient = client
+	s.miningEnabled = true
+	s.clientDifficulty = s.opts.Mining.ClientDifficulty
+
+	// Add a brief delay to allow the stratum client to connect and get a job
+	time.Sleep(500 * time.Millisecond)
+
+	// Check if we have a job
+	job := s.stratumClient.GetCurrentJob()
+	if job == nil {
+		slog.Warn("No mining job available after initialization, but continuing anyway")
+	} else {
+		slog.Info("Successfully retrieved initial mining job from pool", "job_id", job.JobID)
+	}
+
+	slog.Info("Bitcoin mining initialized successfully",
+		"pool", s.opts.Mining.PoolAddress,
+		"client_difficulty", s.clientDifficulty)
+
+	return nil
 }
 
 func (s *Server) challengeFor(r *http.Request, difficulty int) string {
@@ -212,6 +291,12 @@ func (s *Server) handleDNSBL(w http.ResponseWriter, r *http.Request, ip string, 
 func (s *Server) MakeChallenge(w http.ResponseWriter, r *http.Request) {
 	lg := internal.GetRequestLogger(r)
 
+	// Add debug logging to track mining configuration
+	lg.Debug("MakeChallenge called",
+		"mining_enabled", s.miningEnabled,
+		"stratum_client_nil", s.stratumClient == nil,
+		"client_difficulty", s.clientDifficulty)
+
 	encoder := json.NewEncoder(w)
 	cr, rule, err := s.check(r)
 	if err != nil {
@@ -231,19 +316,57 @@ func (s *Server) MakeChallenge(w http.ResponseWriter, r *http.Request) {
 	lg = lg.With("check_result", cr)
 	challenge := s.challengeFor(r, rule.Challenge.Difficulty)
 
-	err = encoder.Encode(struct {
+	// Create response struct with basic challenge data
+	response := struct {
 		Rules     *config.ChallengeRules `json:"rules"`
 		Challenge string                 `json:"challenge"`
+		Mining    bool                   `json:"mining,omitempty"`
+		MiningJob interface{}            `json:"mining_job,omitempty"`
 	}{
 		Challenge: challenge,
 		Rules:     rule.Challenge,
-	})
+		Mining:    s.miningEnabled,
+	}
+
+	// Include mining data if enabled
+	if s.miningEnabled && s.stratumClient != nil {
+		lg.Debug("Mining enabled, getting current job from stratum client")
+		job := s.stratumClient.GetCurrentJob()
+		if job != nil {
+			// Set client difficulty
+			job.ClientDifficulty = s.clientDifficulty
+
+			// Add mining job data
+			response.MiningJob = map[string]interface{}{
+				"job":             job,
+				"extraNonce1":     s.stratumClient.GetExtraNonce1(),
+				"extraNonce2Size": s.stratumClient.GetExtraNonce2Size(),
+			}
+			lg.Debug("Got mining job from pool", "job_id", job.JobID)
+		} else {
+			// If mining is enabled but no job is available, we should return an error
+			lg.Error("mining is enabled but no job is available")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			err := encoder.Encode(struct {
+				Error string `json:"error"`
+			}{
+				Error: "Mining is enabled but no job is available from the pool. Please try again later.",
+			})
+			if err != nil {
+				lg.Error("failed to encode error response", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+			return
+		}
+	}
+
+	err = encoder.Encode(response)
 	if err != nil {
 		lg.Error("failed to encode challenge", "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	lg.Debug("made challenge", "challenge", challenge, "rules", rule.Challenge, "cr", cr)
+	lg.Debug("made challenge", "challenge", challenge, "rules", rule.Challenge, "cr", cr, "mining", s.miningEnabled, "has_mining_job", response.MiningJob != nil)
 	challengesIssued.Inc()
 }
 
@@ -307,34 +430,48 @@ func (s *Server) PassChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	challenge := s.challengeFor(r, rule.Challenge.Difficulty)
+	var isValid bool
 
-	nonce, err := strconv.Atoi(nonceStr)
-	if err != nil {
-		s.ClearCookie(w)
-		lg.Debug("nonce doesn't parse", "err", err)
-		s.respondWithError(w, r, "invalid nonce")
-		return
+	// Check if this is a Bitcoin mining response
+	isMiningHash := s.miningEnabled && strings.HasPrefix(response, "00000") && len(response) == 64
+	if isMiningHash {
+		// For mining, we don't validate against the challenge since mining hash is already proof of work
+		// We just need to check the hash format (already done) and difficulty (implicit in prefix check)
+		isValid = true
+		lg.Debug("mining hash accepted", "hash", response)
+		challengesValidated.Inc()
+		if s.stratumClient != nil {
+			// Track the share for metrics
+			miningSharesAccepted.Inc()
+		}
+	} else {
+		// Normal PoW validation
+		nonce, err := strconv.Atoi(nonceStr)
+		if err != nil {
+			s.ClearCookie(w)
+			lg.Debug("nonce doesn't parse", "err", err)
+			s.respondWithError(w, r, "invalid nonce")
+			return
+		}
+
+		calcString := fmt.Sprintf("%s%d", challenge, nonce)
+		calculated := internal.SHA256sum(calcString)
+
+		isValid = subtle.ConstantTimeCompare([]byte(response), []byte(calculated)) == 1 &&
+			strings.HasPrefix(response, strings.Repeat("0", rule.Challenge.Difficulty))
+
+		if !isValid {
+			s.ClearCookie(w)
+			lg.Debug("hash does not match or difficulty not met", "got", response, "want", calculated)
+			s.respondWithStatus(w, r, "invalid response", http.StatusForbidden)
+			failedValidations.Inc()
+			return
+		}
+
+		challengesValidated.Inc()
 	}
 
-	calcString := fmt.Sprintf("%s%d", challenge, nonce)
-	calculated := internal.SHA256sum(calcString)
-
-	if subtle.ConstantTimeCompare([]byte(response), []byte(calculated)) != 1 {
-		s.ClearCookie(w)
-		lg.Debug("hash does not match", "got", response, "want", calculated)
-		s.respondWithStatus(w, r, "invalid response", http.StatusForbidden)
-		failedValidations.Inc()
-		return
-	}
-
-	// compare the leading zeroes
-	if !strings.HasPrefix(response, strings.Repeat("0", rule.Challenge.Difficulty)) {
-		s.ClearCookie(w)
-		lg.Debug("difficulty check failed", "response", response, "difficulty", rule.Challenge.Difficulty)
-		s.respondWithStatus(w, r, "invalid response", http.StatusForbidden)
-		failedValidations.Inc()
-		return
-	}
+	// At this point the challenge is validated, either via standard PoW or mining
 
 	// Adjust cookie path if base prefix is not empty
 	cookiePath := "/"
@@ -344,7 +481,7 @@ func (s *Server) PassChallenge(w http.ResponseWriter, r *http.Request) {
 	// generate JWT cookie
 	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, jwt.MapClaims{
 		"challenge": challenge,
-		"nonce":     nonce,
+		"nonce":     nonceStr,
 		"response":  response,
 		"iat":       time.Now().Unix(),
 		"nbf":       time.Now().Add(-1 * time.Minute).Unix(),
@@ -368,7 +505,6 @@ func (s *Server) PassChallenge(w http.ResponseWriter, r *http.Request) {
 		Path:        cookiePath,
 	})
 
-	challengesValidated.Inc()
 	lg.Debug("challenge passed, redirecting to app")
 	http.Redirect(w, r, redir, http.StatusFound)
 }

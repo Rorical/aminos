@@ -60,7 +60,53 @@ func (s *Server) RenderIndex(w http.ResponseWriter, r *http.Request, rule *polic
 		}
 	}
 
-	component, err := web.BaseWithChallengeAndOGTags("Making sure you're not a bot!", web.Index(), challenge, rule.Challenge, ogTags)
+	var component templ.Component
+	var err error
+
+	// Use mining template if mining is enabled
+	if s.miningEnabled && s.stratumClient != nil {
+		lg.Debug("Rendering mining challenge",
+			"mining_enabled", s.miningEnabled,
+			"stratum_client_nil", s.stratumClient == nil)
+
+		var miningJob interface{}
+		job := s.stratumClient.GetCurrentJob()
+		if job != nil {
+			// Set client difficulty
+			job.ClientDifficulty = s.clientDifficulty
+
+			// Add mining job data
+			miningJob = map[string]interface{}{
+				"job":             job,
+				"extraNonce1":     s.stratumClient.GetExtraNonce1(),
+				"extraNonce2Size": s.stratumClient.GetExtraNonce2Size(),
+			}
+
+			lg.Debug("Including mining job in challenge", "job_id", job.JobID)
+		} else {
+			lg.Warn("Mining is enabled but no job is available")
+		}
+
+		component, err = web.BaseWithChallengeAndMining(
+			"Mining Challenge - Help secure the network!",
+			web.Index(),
+			challenge,
+			rule.Challenge,
+			true,
+			miningJob,
+			ogTags,
+		)
+	} else {
+		// Standard challenge
+		component, err = web.BaseWithChallengeAndOGTags(
+			"Making sure you're not a bot!",
+			web.Index(),
+			challenge,
+			rule.Challenge,
+			ogTags,
+		)
+	}
+
 	if err != nil {
 		lg.Error("render failed, please open an issue", "err", err) // This is likely a bug in the template. Should never be triggered as CI tests for this.
 		s.respondWithError(w, r, "Internal Server Error: please contact the administrator and ask them to look for the logs around \"RenderIndex\"")

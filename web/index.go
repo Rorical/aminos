@@ -20,6 +20,21 @@ func BaseWithChallengeAndOGTags(title string, body templ.Component, challenge st
 	}, ogTags), nil
 }
 
+// BaseWithChallengeAndMining creates a component that includes mining data
+func BaseWithChallengeAndMining(title string, body templ.Component, challenge string, rules *config.ChallengeRules, mining bool, miningJob interface{}, ogTags map[string]string) (templ.Component, error) {
+	return base(title, body, struct {
+		Rules     *config.ChallengeRules `json:"rules"`
+		Challenge string                 `json:"challenge"`
+		Mining    bool                   `json:"mining"`
+		MiningJob interface{}            `json:"mining_job,omitempty"`
+	}{
+		Challenge: challenge,
+		Rules:     rules,
+		Mining:    mining,
+		MiningJob: miningJob,
+	}, ogTags), nil
+}
+
 func Index() templ.Component {
 	return index()
 }
