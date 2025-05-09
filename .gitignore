@@ -20,3 +20,9 @@ node_modules
 
 # how does this get here
 doc/VERSION
+
+# WASM related files
+web/rust-miner/pkg/
+web/rust-miner/target/
+web/static/js/wasm/
+*.wasm

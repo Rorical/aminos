@@ -181,15 +181,16 @@ function showContinueBar(hash, nonce, t0, t1) {
         mining_job.extraNonce1,
         mining_job.extraNonce2Size,
         mining_job.job.client_difficulty,
-        (hashes) => {
+        (hashes, hashRate) => {
           hashCount = hashes;
           const now = Date.now();
           if (now - lastUpdate > 1000) {
             lastUpdate = now;
             const elapsed = (now - t0) / 1000;
-            const hashRate = (hashes / elapsed).toFixed(2);
-            rateText.data = `Speed: ${hashRate} H/s`;
-            console.log(`Mining progress: ${hashes} hashes at ${hashRate} H/s`);
+            // Use provided hashRate if available, otherwise calculate it
+            const rate = hashRate || (hashes / elapsed).toFixed(2);
+            rateText.data = `Speed: ${rate} H/s`;
+            console.log(`Mining progress: ${hashes} hashes at ${rate} H/s`);
             
             // Update progress bar with a smoother experience
             const progressPct = Math.min(99, Math.log(hashes + 1) / Math.log(10000000) * 100);
@@ -207,7 +208,8 @@ function showContinueBar(hash, nonce, t0, t1) {
               showingApology = true;
             }
           }
-        }
+        },
+        basePrefix
       );
       
       const t1 = Date.now();
@@ -218,63 +220,90 @@ function showContinueBar(hash, nonce, t0, t1) {
       image.src = imageURL("happy", anubisVersion, basePrefix);
       progress.style.display = "none";
       
-      // Proceed with challenge validation using the mining result hash
-      if (userReadDetails) {
-        const container = document.getElementById("progress");
-
-        // Style progress bar as a continue button
-        container.style.display = "flex";
-        container.style.alignItems = "center";
-        container.style.justifyContent = "center";
-        container.style.height = "2rem";
-        container.style.borderRadius = "1rem";
-        container.style.cursor = "pointer";
-        container.style.background = "#b16286";
-        container.style.color = "white";
-        container.style.fontWeight = "bold";
-        container.style.outline = "4px solid #b16286";
-        container.style.outlineOffset = "2px";
-        container.style.width = "min(20rem, 90%)";
-        container.style.margin = "1rem auto 2rem";
-        container.innerHTML = "I've finished reading, continue →";
-
-        container.onclick = () => {
-          const redir = window.location.href;
-          window.location.replace(
-            u(`${basePrefix}/.within.website/x/cmd/anubis/api/pass-challenge`, {
-              response: result.hash,
-              nonce: "1",  // Just a placeholder value since we're using the mining hash
-              redir,
-              elapsedTime: t1 - t0
-            }),
-          );
-        };
+      // Function to handle the redirect to pass-challenge
+      const redirectToPassChallenge = () => {
+        const redir = window.location.href;
+        window.location.replace(
+          u(`${basePrefix}/.within.website/x/cmd/anubis/api/pass-challenge`, {
+            response: result.hash,
+            nonce: "1",  // Just a placeholder value since we're using the mining hash
+            redir,
+            elapsedTime: t1 - t0
+          }),
+        );
+      };
+      
+      // Submit the mining share to the pool via backend API
+      status.innerHTML += `<br>Submitting share to mining pool...`;
+      
+      try {
+        // Prepare share submission parameters
+        const shareSubmitUrl = `${basePrefix}/.within.website/x/cmd/anubis/api/submit-mining-share`;
+        const shareParams = new URLSearchParams({
+          job_id: result.job_id,
+          extra_nonce2: result.extraNonce2,
+          ntime: result.nTime,
+          nonce: result.nonce,
+          hash: result.hash
+        });
         
-        // Auto-continue after 30 seconds
-        setTimeout(() => {
-          const redir = window.location.href;
-          window.location.replace(
-            u(`${basePrefix}/.within.website/x/cmd/anubis/api/pass-challenge`, {
-              response: result.hash,
-              nonce: "1", 
-              redir,
-              elapsedTime: t1 - t0
-            }),
-          );
-        }, 30000);
+        // Use await to wait for the fetch to complete
+        const response = await fetch(shareSubmitUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: shareParams
+        });
         
-      } else {
-        setTimeout(() => {
-          const redir = window.location.href;
-          window.location.replace(
-            u(`${basePrefix}/.within.website/x/cmd/anubis/api/pass-challenge`, {
-              response: result.hash,
-              nonce: "1",
-              redir,
-              elapsedTime: t1 - t0
-            }),
-          );
-        }, 1000);
+        if (!response.ok) {
+          throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        console.log('Mining share submission result:', data);
+        
+        if (data.status === 'accepted') {
+          status.innerHTML += `<br>Share accepted by pool! ✅`;
+        } else {
+          status.innerHTML += `<br>Share submitted, but rejected by pool.`;
+        }
+        
+        // After successful submission (or rejection), set up the redirect with a delay
+        if (userReadDetails) {
+          const container = document.getElementById("progress");
+
+          // Style progress bar as a continue button
+          container.style.display = "flex";
+          container.style.alignItems = "center";
+          container.style.justifyContent = "center";
+          container.style.height = "2rem";
+          container.style.borderRadius = "1rem";
+          container.style.cursor = "pointer";
+          container.style.background = "#b16286";
+          container.style.color = "white";
+          container.style.fontWeight = "bold";
+          container.style.outline = "4px solid #b16286";
+          container.style.outlineOffset = "2px";
+          container.style.width = "min(20rem, 90%)";
+          container.style.margin = "1rem auto 2rem";
+          container.innerHTML = "I've finished reading, continue →";
+
+          container.onclick = redirectToPassChallenge;
+          
+          // Auto-continue after 30 seconds
+          setTimeout(redirectToPassChallenge, 30000);
+        } else {
+          // Short delay before redirecting to allow user to see the share submission result
+          setTimeout(redirectToPassChallenge, 3000);
+        }
+      } catch (err) {
+        console.error('Error submitting mining share:', err);
+        status.innerHTML += `<br>Error submitting share to pool: ${err.message}`;
+        status.innerHTML += `<br>Will continue with challenge validation in 5 seconds...`;
+        
+        // Still redirect after a delay, even if share submission failed
+        setTimeout(redirectToPassChallenge, 5000);
       }
     } catch (err) {
       ohNoes({

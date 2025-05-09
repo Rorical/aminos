@@ -32,6 +32,26 @@ THE SOFTWARE.
 for the JavaScript code in this page.
 */'
 
+# Build WASM miner if possible
+if command -v wasm-pack &> /dev/null; then
+  echo "Building WASM miner..."
+  (cd rust-miner && ./build.sh)
+  mkdir -p static/js/wasm
+  
+  # Copy WASM files if they exist
+  if [ -d "rust-miner/pkg" ]; then
+    echo "Copying WASM files..."
+    cp -f rust-miner/pkg/*.wasm static/js/wasm/ || true
+    cp -f rust-miner/pkg/*.js static/js/wasm/ || true
+  else
+    echo "WASM build failed or not found. Will use JavaScript fallback."
+  fi
+else
+  echo "wasm-pack not found. Skipping WASM miner build."
+  echo "To enable WASM mining for better performance, install wasm-pack:"
+  echo "cargo install wasm-pack"
+fi
+
 # Main script
 esbuild js/main.mjs --sourcemap --bundle --minify --outfile=static/js/main.mjs "--banner:js=${LICENSE}"
 gzip -f -k -n static/js/main.mjs

@@ -142,6 +142,10 @@ func New(opts Options) (*Server, error) {
 	registerWithPrefix(anubis.APIPrefix+"pass-challenge", http.HandlerFunc(result.PassChallenge), "GET")
 	registerWithPrefix(anubis.APIPrefix+"check", http.HandlerFunc(result.maybeReverseProxyHttpStatusOnly), "")
 	registerWithPrefix(anubis.APIPrefix+"test-error", http.HandlerFunc(result.TestError), "GET")
+
+	// Mining-specific API routes
+	registerWithPrefix(anubis.APIPrefix+"submit-mining-share", http.HandlerFunc(result.SubmitMiningShare), "POST")
+
 	registerWithPrefix("/", http.HandlerFunc(result.maybeReverseProxyOrPage), "")
 
 	result.mux = mux

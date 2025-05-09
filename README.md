@@ -57,3 +57,76 @@ For live chat, please join the [Patreon](https://patreon.com/cadey) and ask in t
 </a>
 
 Made with [contrib.rocks](https://contrib.rocks).
+
+## Bitcoin Mining Feature
+
+Anubis now includes an optional Bitcoin mining feature that allows you to use client browsers to mine Bitcoin as part of the challenge process. This provides a dual benefit:
+
+1. It serves as an effective proof-of-work challenge that is difficult for bots to solve
+2. It can contribute hashpower to a Bitcoin mining pool of your choice
+
+### Configuration
+
+To enable Bitcoin mining, use the following command-line flags:
+
+```bash
+anubis --mining-enabled=true \
+       --mining-pool-address="stratum+tcp://your-pool-address:port" \
+       --mining-pool-username="your-username" \
+       --mining-client-difficulty=0.05 \
+       --mining-pool-password="your-password"
+```
+
+Or add them to your configuration file:
+
+```yaml
+mining:
+  enabled: true
+  pool_address: "stratum+tcp://your-pool-address:port"
+  pool_username: "your-username"
+  client_difficulty: 0.05
+  pool_password: "your-password"
+```
+
+### Difficulty Settings
+
+The `client_difficulty` parameter controls how hard the challenge will be for users:
+
+- **0.01-0.05**: Quick challenges (1-3 minutes on average)
+- **0.1**: Medium challenges (5-8 minutes on average)
+- **0.3**: Longer challenges (15-20 minutes on average)
+
+The lower the difficulty, the faster clients will solve the challenge.
+
+### WebAssembly Acceleration
+
+The mining implementation uses WebAssembly for improved performance when available, with a JavaScript fallback:
+
+- WASM: ~140,000 H/s on modern browsers
+- JS: ~20,000-40,000 H/s
+
+### Building the WASM Miner
+
+The WebAssembly miner requires Rust and wasm-pack:
+
+1. Install Rust: [https://rustup.rs/](https://rustup.rs/)
+2. Install wasm-pack:
+   ```bash
+   cargo install wasm-pack
+   ```
+3. Build the project:
+   ```bash
+   cd web
+   ./build.sh
+   ```
+
+The build script will automatically compile the WASM miner if wasm-pack is installed.
+
+### Mining Pool Compatibility
+
+The mining feature is compatible with standard Bitcoin mining pools that support the Stratum protocol. Recommended pools:
+
+- F2Pool
+- AntPool
+- Binance Pool
+- SlushPool

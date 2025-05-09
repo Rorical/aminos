@@ -438,7 +438,8 @@ func (s *Server) PassChallenge(w http.ResponseWriter, r *http.Request) {
 		// For mining, we don't validate against the challenge since mining hash is already proof of work
 		// We just need to check the hash format (already done) and difficulty (implicit in prefix check)
 		isValid = true
-		lg.Debug("mining hash accepted", "hash", response)
+		lg.Debug("mining hash accepted for challenge validation", "hash", response)
+		lg.Info("note: this only validates the hash for the challenge, not submitting to mining pool")
 		challengesValidated.Inc()
 		if s.stratumClient != nil {
 			// Track the share for metrics
@@ -556,4 +557,80 @@ func (s *Server) check(r *http.Request) (policy.CheckResult, *policy.Bot, error)
 func (s *Server) CleanupDecayMap() {
 	s.DNSBLCache.Cleanup()
 	s.OGTags.Cleanup()
+}
+
+func (s *Server) SubmitMiningShare(w http.ResponseWriter, r *http.Request) {
+	lg := internal.GetRequestLogger(r)
+
+	// Check if mining is enabled
+	if !s.miningEnabled || s.stratumClient == nil {
+		lg.Error("mining share submission attempted but mining is disabled")
+		http.Error(w, "Mining is not enabled", http.StatusBadRequest)
+		return
+	}
+
+	// Parse request body
+	if err := r.ParseForm(); err != nil {
+		lg.Error("failed to parse form", "err", err)
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Extract mining share parameters
+	jobID := r.FormValue("job_id")
+	extraNonce2 := r.FormValue("extra_nonce2")
+	nTime := r.FormValue("ntime")
+	nonce := r.FormValue("nonce")
+	hash := r.FormValue("hash")
+
+	// Validate parameters
+	if jobID == "" || extraNonce2 == "" || nTime == "" || nonce == "" {
+		lg.Error("missing required mining share parameters",
+			"job_id", jobID,
+			"extraNonce2", extraNonce2,
+			"nTime", nTime,
+			"nonce", nonce)
+		http.Error(w, "Missing required parameters", http.StatusBadRequest)
+		return
+	}
+
+	lg.Info("received mining share submission",
+		"job_id", jobID,
+		"hash", hash)
+
+	// Increment shares submitted counter
+	miningSharesSubmitted.Inc()
+
+	// Submit the share to the mining pool
+	accepted, err := s.stratumClient.SubmitShare(jobID, extraNonce2, nTime, nonce)
+	if err != nil {
+		lg.Error("failed to submit share to pool", "err", err)
+		http.Error(w, fmt.Sprintf("Failed to submit share: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if accepted {
+		// Share was accepted by the pool
+		lg.Info("share accepted by pool", "hash", hash)
+		miningPoolShares.Inc()
+
+		// Return success response
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "accepted",
+			"message": "Share accepted by pool",
+		})
+	} else {
+		// Share was rejected by the pool
+		lg.Warn("share rejected by pool", "hash", hash)
+		miningSharesRejected.Inc()
+
+		// Return error response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK) // Still return 200 but with rejection info
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "rejected",
+			"message": "Share rejected by pool",
+		})
+	}
 }

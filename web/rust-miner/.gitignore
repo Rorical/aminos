@@ -1,0 +1,20 @@
+# Rust build artifacts
+/target/
+/Cargo.lock
+
+# WASM build outputs
+/pkg/
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Generated binaries
+*.wasm
+
+# Temporary files
+*.tmp
+*.bak 

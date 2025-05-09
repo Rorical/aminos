@@ -2,16 +2,79 @@
 // This file implements client-side Bitcoin mining
 
 // We'll dynamically import the mining wrapper with the correct path
-let createWasmMiningWorker;
+let wasmInitialized = false;
+let wasmModule = null;
+let MiningJob = null;
+
+// Try to load the WASM miner
+async function loadWasmMiner(basePrefix) {
+  try {
+    const wasmDir = `${basePrefix}/.within.website/x/cmd/anubis/static/js/wasm`;
+    console.log("Attempting to load WASM miner from:", wasmDir);
+    
+    // First check if the WASM file exists
+    try {
+      const wasmResponse = await fetch(`${wasmDir}/rust_miner_bg.wasm`);
+      if (!wasmResponse.ok) {
+        console.warn("WASM file not found, falling back to JavaScript implementation");
+        return false;
+      }
+    } catch (e) {
+      console.warn("WASM file check failed:", e);
+      return false;
+    }
+    
+    // Now import the JS module
+    try {
+      const rustWasmModule = await import(`${wasmDir}/rust_miner.js`);
+      console.log("WASM module loaded:", rustWasmModule);
+      
+      // Initialize the WASM module
+      wasmModule = rustWasmModule;
+      MiningJob = rustWasmModule.MiningJob;
+      
+      // Initialize the WASM module
+      await rustWasmModule.default();
+      rustWasmModule.start(); // Initialize panic hook
+      
+      console.log("WASM miner initialized successfully");
+      wasmInitialized = true;
+      return true;
+    } catch (e) {
+      console.error("Error initializing WASM module:", e);
+      return false;
+    }
+  } catch (err) {
+    console.warn("Failed to load WASM miner, falling back to JavaScript implementation:", err);
+    return false;
+  }
+}
 
 export default async function bitcoinMine(
   job,
   extraNonce1,
   extraNonce2Size,
   difficulty,
-  progressCallback = null
+  progressCallback = null,
+  basePrefix = ""
 ) {
   console.debug("Bitcoin mining started");
+
+  // Try to load the WASM miner if not already loaded
+  if (!wasmInitialized) {
+    await loadWasmMiner(basePrefix);
+  }
+
+  // If WASM miner is loaded, use it
+  if (wasmInitialized && MiningJob) {
+    console.log("Using WASM miner for better performance");
+    try {
+      return await mineWithWasm(job, extraNonce1, extraNonce2Size, difficulty, progressCallback);
+    } catch (err) {
+      console.warn("WASM miner failed, falling back to JavaScript implementation:", err);
+      // Fall back to JavaScript implementation
+    }
+  }
 
   // Fall back to the original JavaScript implementation
   return new Promise((resolve, reject) => {
@@ -45,6 +108,75 @@ export default async function bitcoinMine(
       extraNonce2Size,
       difficulty,
     });
+  });
+}
+
+// WASM mining implementation using direct Rust exports
+async function mineWithWasm(job, extraNonce1, extraNonce2Size, difficulty, progressCallback = null) {
+  console.debug("Bitcoin WASM mining started");
+  
+  return new Promise((resolve, reject) => {
+    try {
+      // Create mining job object
+      const miningJob = new MiningJob(
+        job.version,
+        job.prev_hash,
+        job.ntime,
+        job.nbits,
+        job.coinbase1,
+        job.coinbase2,
+        extraNonce1,
+        extraNonce2Size,
+        difficulty
+      );
+      
+      // Set merkle branches
+      if (job.merkle_branches && job.merkle_branches.length > 0) {
+        miningJob.set_merkle_branches(job.merkle_branches.join(','));
+      }
+      
+      // Find share with progress reporting
+      const batchSize = 5000000;
+      let totalHashes = 0;
+      let lastReportTime = Date.now();
+      
+      // Create a worker for reporting progress
+      const reportWorker = setInterval(() => {
+        if (progressCallback && totalHashes > 0) {
+          const now = Date.now();
+          const rate = totalHashes / ((now - lastReportTime) / 1000);
+          progressCallback(totalHashes, rate);
+        }
+      }, 1000);
+      
+      // Function to mine in batches to avoid blocking the UI
+      function mineNextBatch() {
+        const result = miningJob.mine_with_progress(batchSize);
+        const resultObj = JSON.parse(result);
+        
+        totalHashes += resultObj.iterations;
+        
+        if (resultObj.status === 'found') {
+          // Found a solution
+          clearInterval(reportWorker);
+          resolve({
+            job_id: job.job_id,
+            extraNonce2: resultObj.extraNonce2,
+            nTime: job.ntime,
+            nonce: resultObj.nonce,
+            hash: resultObj.hash
+          });
+        } else {
+          // Continue mining
+          setTimeout(mineNextBatch, 0);
+        }
+      }
+      
+      // Start mining
+      mineNextBatch();
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
